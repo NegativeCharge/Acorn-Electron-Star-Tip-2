@@ -1,7 +1,7 @@
 ; Tim Follin's Star Tip 2 ported to the Commodore PET by David Given
 ; The music is Follin's, the code is mine. My bits are CC0. Enjoy.
 ; Acorn Electron port by Negative Charge, June 2025.
-; Assemble with beebasm.
+; Assemble with BeebAsm.
 
 SHEILA_COUNTER          = $FE06
 SHEILA_MISC_CONTROL     = $FE07
@@ -9,7 +9,7 @@ SHEILA_MISC_CONTROL     = $FE07
 SPEAKER_OFF             = %00100001
 SPEAKER_ON              = %10100010
 MAX_PULSE_LEN           = 16
-TICKS_PER_VOL_STEP      = 10
+TICKS_PER_VOL_STEP      = 8
 
 org 0
 .ptr           equw 0
@@ -26,14 +26,15 @@ org 0
 .duration      equw 0
 .etimer        equb 0
 .decay         equb 0
+.cycle_balance equb 0
 
 org &1100
 guard &5800
 
 .start
 
-   lda     #$00
-   sta     SHEILA_COUNTER      ; Zero the ULA SHEILA counter (FE06), creating a toggle speaker (inaudible frequency)
+   lda #$00
+   sta SHEILA_COUNTER      ; Zero the ULA SHEILA counter (FE06), creating a toggle speaker (inaudible frequency)
     
    sei
 
@@ -116,33 +117,47 @@ guard &5800
 
    jmp *
 
+; Improved pulse generation with balanced on/off cycles
 macro process_note var, offset
 {
-   dec var            ; 5
-   bne exit           ; 2
+   dec var                    ; 5
+   bne exit                   ; 2
 
-   lda #SPEAKER_ON
-   sta SHEILA_MISC_CONTROL 
+   ; Calculate balanced on/off times
+   lda pulse_length           ; 3
+   sta cycle_balance          ; 3
+   
+   ; ON phase - sound enabled
+   lda #SPEAKER_ON         ; 2 cycles     
+   sta SHEILA_MISC_CONTROL ; 4 cycles
 
-   ldx pulse_length   ; 3
-.loop1
-   dex                ; 2
-   bne loop1          ; 2
-
-   lda #SPEAKER_OFF        
-   sta SHEILA_MISC_CONTROL 
+   ; Balanced ON delay using cycle_balance
+   ldx cycle_balance          ; 3
+.on_loop
+   nop                        ; 2 per iteration
+   dex                        ; 2 per iteration  
+   bne on_loop                ; 2 per iteration (except last)
+   
+   ; OFF phase - sound muted
+   lda #SPEAKER_OFF        ; 2 cycles     
+   sta SHEILA_MISC_CONTROL ; 4 cycles
     
-   sec                ; 2
-   lda #MAX_PULSE_LEN ; 2
-   sbc pulse_length   ; 3
-   tax                ; 2
-.loop2
-   dex                ; 2
-   bne loop2          ; 2
+   ; Balanced OFF delay - complement of ON time
+   sec                        ; 2
+   lda #MAX_PULSE_LEN         ; 2
+   sbc cycle_balance          ; 3
+   tax                        ; 2
+   beq skip_off_loop          ; 2 (branch if zero cycles needed)
+.off_loop
+   nop                        ; 2 per iteration
+   dex                        ; 2 per iteration
+   bne off_loop               ; 2 per iteration (except last)
+.skip_off_loop
 
-   ldy #offset        ; 2
-   lda (ptr), y       ; 5
-   sta var            ; 3
+   ; Load next note value
+   ldy #offset                ; 2
+   lda (ptr), y               ; 5
+   sta var                    ; 3
 .exit
 }
 endmacro
@@ -159,28 +174,30 @@ endmacro
       sta etimer
       lda attack_flag
       bne attack_flag_is_set
-         dec decay         ; 5
-         bne not_etimer    ; 2
+         ; Decay phase - reduce pulse width
+         dec decay              ; 5
+         bne not_etimer         ; 2
 
-         lda note_decay    ; 3
-         sta decay         ; 3
+         lda note_decay         ; 3
+         sta decay              ; 3
 
-         ldx pulse_length  ; 3
-         dex               ; 2
-         cpx note_volume   ; 3
-         beq not_etimer    ; 2
+         ldx pulse_length       ; 3
+         dex                    ; 2
+         cpx note_volume        ; 3
+         beq not_etimer         ; 2
 
          stx pulse_length
-         bne not_etimer    ; pulse_length is never 0
+         bne not_etimer         ; pulse_length is never 0
       .attack_flag_is_set
-         dec attack        ; 5
-         bne not_etimer    ; 2
+         ; Attack phase - increase pulse width
+         dec attack             ; 5
+         bne not_etimer         ; 2
 
-         lda note_attack   ; 3
-         sta attack        ; 3
+         lda note_attack        ; 3
+         sta attack             ; 3
 
-         ldx pulse_length  ; 3
-         inx               ; 2
+         ldx pulse_length       ; 3
+         inx                    ; 2
          stx pulse_length
          cpx #MAX_PULSE_LEN-1
          bne not_etimer
@@ -210,9 +227,9 @@ macro envelope len, attack, decay, volume
 endmacro
 
 macro note a, b, c
-   equb a/2
-   equb b/2
-   equb c/2
+   equb a / 2
+   equb b / 2
+   equb c / 2
 endmacro
 
 .music_data
